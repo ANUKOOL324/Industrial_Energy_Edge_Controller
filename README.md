@@ -56,6 +56,51 @@ Independent processing
 
 The goal is to show how an embedded device can keep its important local work separate from optional communication services.
 
+## System architecture
+
+```mermaid
+flowchart TD
+    Sensors[Voltage Sensor<br/>GPIO 35] --> Input[Energy Input]
+    Current[Current Sensor<br/>GPIO 34] --> Input
+    Simulator[Simulation Input] -. optional .-> Input
+    Input --> Energy[EnergyTask]
+    Energy --> Measure[EnergyData<br/>Voltage / Current / Power / Energy / Cost]
+    Measure --> EnergyQueues[Latest-value ESP32 RTOS Queues]
+
+    EnergyQueues --> FaultTask[FaultTask]
+    EnergyQueues --> StorageTask[StorageTask]
+    EnergyQueues --> NetworkTask[NetworkTask]
+
+    FaultTask --> FaultManager[FaultManager]
+    FaultManager --> FaultState[SystemState<br/>NORMAL / WARNING / FAULT / RECOVERY]
+    FaultState --> Snapshot[Shared Snapshot]
+    Measure --> Snapshot
+
+    StorageTask --> NVS[(ESP32 Preferences / NVS)]
+
+    NetworkTask --> WiFi[Wi-Fi Manager]
+    NetworkTask --> MQTTService[MQTT Service]
+    NetworkTask --> ModbusService[Modbus TCP Server]
+    NetworkTask --> Blynk[Blynk Optional]
+    NetworkTask --> OTAManager[OTA Manager]
+
+    MQTTService --> MQTTBroker[MQTT Broker]
+    MQTTService --> OfflineBuffer[Bounded Offline Telemetry Buffer]
+    OfflineBuffer --> MQTTService
+
+    ModbusService --> ModbusClient[Industrial Modbus TCP Client]
+    Blynk --> BlynkCloud[Blynk Service]
+    OTAManager --> Firmware[Versioned Firmware Update]
+
+    DiagnosticsTask[DiagnosticsTask] --> Snapshot
+    DiagnosticsTask --> RuntimeHealth[Runtime Diagnostics]
+    RuntimeHealth --> MQTTService
+    RuntimeHealth --> Serial[Serial Health Output]
+
+    Snapshot -. mutex-protected .- NetworkTask
+    Snapshot -. mutex-protected .- DiagnosticsTask
+```
+
 ## What happens when the controller starts?
 
 ```mermaid
