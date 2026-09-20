@@ -1,113 +1,24 @@
-# ⚡ IoT-Based Smart Electricity Billing System
+# Industrial Energy Edge Controller
 
-An IoT-based smart electricity billing system built using **ESP32** and **HW872A current sensor** for real-time electricity monitoring and bill estimation. The system measures current consumption, calculates energy usage, and displays live monitoring data through the **Blynk IoT platform** for efficient energy management.
+ESP32 firmware for voltage, current, power, energy and tariff tracking using the existing EmonLib sensor path.
 
----
+## Build and configure
 
-## 🚀 Features
+1. Install PlatformIO.
+2. Copy `include/secrets.example.h` to `include/secrets.h`.
+3. Put the Wi-Fi, Blynk and MQTT values for the target installation in `include/secrets.h`.
+4. Run `pio run -e esp32dev` and flash the board.
 
-- Real-time current and power monitoring
-- Electricity bill estimation based on energy consumption
-- Wireless monitoring using ESP32 Wi-Fi module
-- Live data visualization on Blynk IoT dashboard
-- Low-cost and scalable smart energy solution
-- Continuous monitoring and remote accessibility
+The local secrets file is ignored by Git. Credentials that were present in the original sketch were removed from the tracked source; rotate those Wi-Fi and Blynk credentials before deploying.
 
----
+## Current firmware behavior
 
-## 🛠️ Tech Stack & Components
+The controller keeps the original hardware mapping: voltage on GPIO 35, current on GPIO 34, and the original calibration constants. Measurements are filtered by configurable cutoffs, accumulated using elapsed time, and checkpointed to ESP32 NVS once per minute. A missing load no longer resets the accumulated energy or cost.
 
-### Hardware
-- ESP32
-- HW872A Current Sensor
-- Breadboard & Jumper Wires
-- Power Supply
+The firmware reconnects to Wi-Fi through the ESP32 station stack without a startup retry loop. Blynk telemetry remains available on V0-V4 for compatibility with the original dashboard.
 
-### Software
-- Arduino IDE
-- Embedded C/C++
-- Blynk IoT Platform
+Run the portable logic tests with `pio test -e native`.
 
----
+## Planned expansion
 
-## ⚙️ Working Principle
-
-1. The **HW872A current sensor** measures the current drawn by the connected load.
-2. ESP32 processes the sensor readings and calculates:
-   - Current Consumption
-   - Power Usage
-   - Energy Consumption
-   - Estimated Electricity Bill
-3. The processed data is sent to the **Blynk IoT platform** over Wi-Fi.
-4. Users can monitor electricity usage remotely in real time.
-
----
-
-## 📊 Functionalities
-
-- Real-time energy monitoring
-- Smart electricity bill calculation
-- Remote IoT dashboard access
-- Continuous live data updates
-- Efficient energy usage tracking
-
----
-
-## 📷 Project Preview
-
-_Add your hardware setup images, circuit diagram, and Blynk dashboard screenshots here._
-
-Example:
-
-```md
-![Hardware Setup](images/setup.jpg)
-![Blynk Dashboard](images/dashboard.jpg)
-```
-
----
-
-## 🔌 Circuit Overview
-
-The system uses:
-- ESP32 as the main microcontroller
-- HW872A sensor for current sensing
-- Wi-Fi communication for cloud monitoring
-
----
-
-## 📂 Project Structure
-
-```bash
-smart-electricity-billing-system/
-│
-├── code/
-├── images/
-├── circuit-diagram/
-├── README.md
-└── project-report.pdf
-```
-
----
-
-## ▶️ Future Improvements
-
-- Mobile notification alerts for high power usage
-- Historical data analytics
-- Cloud database integration
-- AI-based power consumption prediction
-- Smart appliance automation
-
----
-
-## 👨‍💻 Author
-
-### Anupam Choubey
-
-- GitHub: https://github.com/anupam-devcodes
-- LinkedIn: https://www.linkedin.com/in/anupam-choubey-8a7514296
-
----
-
-## ⭐ Project Goal
-
-The goal of this project is to promote smart energy monitoring and provide an affordable IoT-based solution for efficient electricity consumption tracking and billing.
+The next implementation slice can add the industrial interfaces from the brief behind the same measurement model: MQTT with a bounded offline queue, Modbus TCP register publishing, FreeRTOS task separation, watchdog health reporting, and a simulation input mode. The current code keeps sensor acquisition, persistence and transport boundaries small so those additions do not require another monolithic sketch.
