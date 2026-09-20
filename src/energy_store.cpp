@@ -8,7 +8,7 @@ static Preferences preferences;
 
 bool EnergyStore::begin() {
 #ifndef UNIT_TEST
-    return preferences.begin("energy", false);
+    return preferences.begin(config::nvsNamespace, false);
 #else
     return true;
 #endif
@@ -37,4 +37,3 @@ bool EnergyStore::save(const EnergySample &sample, float tariff) {
     return true;
 #endif
 }
-

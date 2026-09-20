@@ -11,7 +11,8 @@ struct EnergySample {
     bool valid = false;
 };
 
+using EnergyData = EnergySample;
+
 float integrateKWh(float powerWatts, uint32_t elapsedMs);
 float calculateCost(float energyKWh, float tariff);
 EnergySample sanitizeSample(EnergySample sample, float voltageCutoff, float currentCutoff, float powerCutoff);
-
