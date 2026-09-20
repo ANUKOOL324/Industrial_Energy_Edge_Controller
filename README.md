@@ -143,3 +143,38 @@ pio test -e native
 ```
 
 Set Wi-Fi, Blynk, and MQTT values in `include/secrets.h`. Do not place real credentials in tracked files.
+## Project Structure
+
+```text
+include/     Headers and configuration
+src/         Firmware source code
+test/        Native tests
+docs/        Architecture and interface documentation
+```
+
+Detailed documentation:
+
+- [Architecture](docs/architecture.md)
+- [Fault state machine](docs/fault-state-machine.md)
+- [MQTT telemetry](docs/mqtt-telemetry.md)
+- [Modbus register map](docs/modbus-register-map.md)
+- [OTA updates](docs/ota-update.md)
+
+
+## Results
+
+![Result 1](docs/results/269b4ab2-4a45-4765-be7d-8c2deb9c0c62.png)
+
+![Result 2](docs/results/2b01bc98-8f3b-4253-92ed-dd47ff520c17.png)
+
+![Result 3](docs/results/3c88587d-278c-4332-a306-4a18420c7f6d.png)
+
+![Result 4](docs/results/4001d5fd-85b6-4945-95d0-392cab2b00cb.png)
+
+![Result 5](docs/results/a76acd27-a806-47ce-addc-d33b957cc9a3.png)
+
+![Result 6](docs/results/f8bd2be7-6f54-4082-a88a-bd3631262bcd.png)
+
+![Result 7](docs/results/Screenshot%202026-05-25%20235920.png)
+
+![Result 8](docs/results/Screenshot%202026-05-26%20000434.png)
