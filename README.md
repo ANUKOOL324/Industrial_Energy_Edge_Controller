@@ -2,11 +2,17 @@
 
 An ESP32-based energy monitoring controller for measuring electrical usage and providing energy data to industrial and IoT systems.
 
+## Project Aim
+
+The aim of this project is to build a reliable ESP32 energy-monitoring edge controller instead of a simple sensor dashboard. The controller measures electrical values, stores cumulative energy, detects abnormal conditions, and shares data with industrial and IoT systems.
+
+Measurement continues independently from Wi-Fi, MQTT, Modbus TCP, Blynk, and OTA services. This keeps the core energy-monitoring function available even when a network service is unavailable.
+
 ## Features
 
 - Voltage, current, power, energy, and cost measurement
 - Persistent energy storage using ESP32 NVS
-- FreeRTOS task-based architecture
+- ESP32 RTOS task-based architecture
 - Fault detection and recovery states
 - Wi-Fi and MQTT connectivity
 - Offline MQTT telemetry buffering
@@ -19,17 +25,45 @@ An ESP32-based energy monitoring controller for measuring electrical usage and p
 
 ```mermaid
 flowchart TD
-    Sensors[Voltage / Current Sensors] --> Energy[EnergyTask]
-    Energy --> Queues[FreeRTOS Queues]
-    Queues --> Fault[FaultTask]
-    Queues --> Storage[StorageTask]
-    Queues --> Network[NetworkTask]
-    Storage --> NVS[(ESP32 NVS)]
-    Network --> MQTT[MQTT]
-    Network --> Modbus[Modbus TCP]
-    Network --> Blynk[Blynk Optional]
-    Network --> OTA[OTA Manager]
-    Diagnostics[DiagnosticsTask] --> Network
+    Sensors[Voltage Sensor<br/>GPIO 35] --> Input[Energy Input]
+    Current[Current Sensor<br/>GPIO 34] --> Input
+    Simulator[Simulation Input] -. optional .-> Input
+    Input --> Energy[EnergyTask]
+    Energy --> Measure[EnergyData<br/>Voltage / Current / Power / Energy / Cost]
+    Measure --> EnergyQueues[Latest-value ESP32 RTOS Queues]
+
+    EnergyQueues --> FaultTask[FaultTask]
+    EnergyQueues --> StorageTask[StorageTask]
+    EnergyQueues --> NetworkTask[NetworkTask]
+
+    FaultTask --> FaultManager[FaultManager]
+    FaultManager --> FaultState[SystemState<br/>NORMAL / WARNING / FAULT / RECOVERY]
+    FaultState --> Snapshot[Shared Snapshot]
+    Measure --> Snapshot
+
+    StorageTask --> NVS[(ESP32 Preferences / NVS)]
+
+    NetworkTask --> WiFi[Wi-Fi Manager]
+    NetworkTask --> MQTTService[MQTT Service]
+    NetworkTask --> ModbusService[Modbus TCP Server]
+    NetworkTask --> Blynk[Blynk Optional]
+    NetworkTask --> OTAManager[OTA Manager]
+
+    MQTTService --> MQTTBroker[MQTT Broker]
+    MQTTService --> OfflineBuffer[Bounded Offline Telemetry Buffer]
+    OfflineBuffer --> MQTTService
+
+    ModbusService --> ModbusClient[Industrial Modbus TCP Client]
+    Blynk --> BlynkCloud[Blynk Service]
+    OTAManager --> Firmware[Versioned Firmware Update]
+
+    DiagnosticsTask[DiagnosticsTask] --> Snapshot
+    DiagnosticsTask --> RuntimeHealth[Runtime Diagnostics]
+    RuntimeHealth --> MQTTService
+    RuntimeHealth --> Serial[Serial Health Output]
+
+    Snapshot -. mutex-protected .- NetworkTask
+    Snapshot -. mutex-protected .- DiagnosticsTask
 ```
 
 ## Hardware
