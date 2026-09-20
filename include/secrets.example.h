@@ -8,8 +8,5 @@
 
 static constexpr char WIFI_SSID[] = "REPLACE_ME";
 static constexpr char WIFI_PASSWORD[] = "REPLACE_ME";
-static constexpr char MQTT_HOST[] = "192.168.1.10";
-static constexpr uint16_t MQTT_PORT = 1883;
 static constexpr char MQTT_USERNAME[] = "REPLACE_ME";
 static constexpr char MQTT_PASSWORD[] = "REPLACE_ME";
-
