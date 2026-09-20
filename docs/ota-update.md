@@ -1,22 +1,26 @@
-# OTA Update Architecture
+# OTA Firmware Updates
 
-OTA is the final service boundary in this project. `OtaManager` is called by NetworkTask; measurement, fault handling, storage, and diagnostics remain separate.
+## What is OTA?
+
+OTA means Over-The-Air update. It allows firmware to be downloaded through a network connection instead of requiring a programmer cable.
+
+This project keeps OTA behind `OtaManager` so update logic does not spread through the measurement code. Energy measurement and storage remain separate from the update service.
 
 ## Versioning
 
-The version is defined once in [include/version.h](../include/version.h):
+The firmware version is defined in [include/version.h](../include/version.h):
 
 ```text
-FIRMWARE_VERSION_MAJOR = 1
-FIRMWARE_VERSION_MINOR = 0
-FIRMWARE_VERSION_PATCH = 0
+FIRMWARE_VERSION_MAJOR
+FIRMWARE_VERSION_MINOR
+FIRMWARE_VERSION_PATCH
 ```
 
-`parseSemanticVersion()` compares numeric components, so `1.0.10` is newer than `1.0.9`. Version text is included in startup output and diagnostics.
+Versions are compared numerically. For example, `1.0.10` is newer than `1.0.9`.
 
 ## Manifest
 
-The manifest is a small JSON object:
+An update manifest contains the information needed to decide whether an update is valid:
 
 ```json
 {
@@ -27,53 +31,43 @@ The manifest is a small JSON object:
 }
 ```
 
-The parser requires a valid semantic version, an HTTP(S) URL, and exactly 64 hexadecimal SHA-256 characters. Image size is optional but checked when supplied.
+The parser checks the version, URL format, SHA-256 length/characters, and optional image size.
 
-The default `config::otaManifestUrl` is empty. This prevents an update check until an operator explicitly configures an update source. There is no arbitrary MQTT URL command.
+The default manifest URL is empty. An update source must be configured before an update check can occur. There is no arbitrary MQTT URL command.
 
-## State flow
+## Update flow
 
 ```mermaid
-stateDiagram-v2
-    [*] --> IDLE
-    IDLE --> CHECKING: scheduled/configured check
-    CHECKING --> IDLE: no newer version
-    CHECKING --> UPDATE_AVAILABLE: newer version
-    CHECKING --> FAILED: invalid manifest/network error
-    UPDATE_AVAILABLE --> DOWNLOADING
-    DOWNLOADING --> VALIDATING
-    VALIDATING --> INSTALLING: SHA-256 matches
-    VALIDATING --> FAILED: hash mismatch
-    INSTALLING --> SUCCESS: Update.end succeeds
-    INSTALLING --> FAILED: install error
-    SUCCESS --> [*]: reboot requested
+flowchart TD
+    A[Current Firmware] --> B[Check Manifest]
+    B --> C[Compare Versions]
+    C -->|No newer version| D[Return to Idle]
+    C -->|Newer version| E[Download Image]
+    E --> F[Calculate SHA-256]
+    F -->|Hash matches| G[Install Image]
+    F -->|Hash mismatch| H[Update Failed]
+    G --> I[Reboot]
+    I --> J[Health Check]
+    J --> K[Confirm Image When Rollback Is Available]
 ```
 
-Errors distinguish network unavailable, manifest error, invalid version, download failure, hash mismatch, install failure, and rollback error.
+The manager reports explicit states such as `CHECKING`, `DOWNLOADING`, `VALIDATING`, `INSTALLING`, `SUCCESS`, and `FAILED`. Errors identify problems such as network failure, invalid manifest, download failure, hash mismatch, install failure, or rollback failure.
 
-## Integrity versus authenticity
+## Integrity and authentication
 
-The image is hashed with SHA-256 and compared with the manifest. That proves that the downloaded bytes match the supplied hash. It does not prove who supplied the manifest or hash. This project does not implement signed firmware, signed manifests, secure boot, or a certificate policy.
+SHA-256 confirms that the downloaded bytes match the hash supplied in the manifest. It does not prove who supplied the manifest or the hash. This project does not implement signed firmware, signed manifests, secure boot, or a certificate policy.
 
-## Runtime behavior
+## Health and rollback
 
-The Arduino `HTTPClient` and `Update` path performs a blocking download/write operation while an update is active. That work is isolated to NetworkTask; EnergyTask does not wait for it. Network responsiveness is reduced during the transfer, which is an explicit limitation of this implementation.
+After reboot, the manager can detect an ESP32 image waiting for verification. When platform rollback support is enabled, it confirms the image only after:
 
-After installation, the manager requests a reboot. It then checks whether the running image is marked `ESP_OTA_IMG_PENDING_VERIFY`. If the platform is configured for app rollback, the manager confirms the image only after a healthy period with:
+- the measurement task is running
+- storage initialized correctly
+- no critical fault is active
+- free heap is above the configured minimum
 
-- EnergyTask running
-- storage initialized
-- no critical fault
-- free heap above the configured minimum
+Rollback depends on the ESP32 partition table, bootloader settings, and platform configuration. The project provides the software hook, but the rollback behavior must be tested on the target board.
 
-The ESP32 partition table, bootloader configuration, Arduino-ESP32 version, and build settings determine whether rollback is actually available. Rollback hardware validation is pending.
+## Runtime limitation
 
-## Status reporting
-
-OTA transitions are published on:
-
-```text
-industrial-energy/<device-id>/ota
-```
-
-The payload includes state, error, current version, and target version. MQTT is not required for the health decision or for continued energy measurement.
+The Arduino HTTP/update operation can block `NetworkTask` while an image is being downloaded and written. It does not run inside `EnergyTask`, so normal measurement code remains separate, but network service responsiveness is reduced during an update.

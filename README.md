@@ -1,83 +1,106 @@
 # Industrial Energy Edge Controller
 
-An ESP32-based energy monitoring controller for measuring electrical usage and providing energy data to industrial and IoT systems.
+## What is this project?
 
-## Project Aim
+This project turns an ESP32 into an energy-monitoring edge controller. Voltage and current sensors provide the electrical measurements. The ESP32 calculates power, cumulative energy, and cost. Measurement continues even when the network is unavailable. Separate ESP32 RTOS tasks handle measurement, faults, storage, communication, and diagnostics. Other systems can read the data through MQTT or Modbus TCP. Cumulative energy and cost are restored after a restart from ESP32 NVS storage. The project also contains an isolated OTA firmware-update subsystem.
 
-The aim of this project is to build a reliable ESP32 energy-monitoring edge controller instead of a simple sensor dashboard. The controller measures electrical values, stores cumulative energy, detects abnormal conditions, and shares data with industrial and IoT systems.
+## What does the complete system do?
 
-Measurement continues independently from Wi-Fi, MQTT, Modbus TCP, Blynk, and OTA services. This keeps the core energy-monitoring function available even when a network service is unavailable.
+```text
+Electrical Load
+      |
+      v
+Voltage and Current Sensors
+      |
+      v
+ESP32 Edge Controller
+      |-- Calculate power and energy
+      |-- Detect abnormal readings
+      |-- Save cumulative energy
+      |-- Publish telemetry
+      |-- Serve Modbus TCP data
+      |-- Monitor device health
+      |-- Manage firmware updates
+      |
+      v
+Laptop / PLC / MQTT Broker / Dashboard
+```
 
-## Features
+The sensors measure the electrical load. The ESP32 processes the measurements locally. Network clients receive copies of the data, but they are not required for the measurement loop to continue.
 
-- Voltage, current, power, energy, and cost measurement
-- Persistent energy storage using ESP32 NVS
-- ESP32 RTOS task-based architecture
-- Fault detection and recovery states
-- Wi-Fi and MQTT connectivity
-- Offline MQTT telemetry buffering
-- Read-only Modbus TCP telemetry
-- Runtime diagnostics
-- Simulation input mode
-- OTA firmware management
+## Why this project exists
 
-## Architecture
+A simple student project often follows this path:
+
+```text
+Sensor -> ESP32 -> Dashboard
+```
+
+That is a useful starting point. This project develops the same idea into a more structured controller:
+
+```text
+Sensor
+  |
+  v
+ESP32 measurement
+  |
+  v
+Independent processing
+  |
+  +--> Persistent storage
+  +--> Fault management
+  +--> MQTT telemetry
+  +--> Modbus TCP
+  +--> Runtime diagnostics
+```
+
+The goal is to show how an embedded device can keep its important local work separate from optional communication services.
+
+## What happens when the controller starts?
 
 ```mermaid
 flowchart TD
-    Sensors[Voltage Sensor<br/>GPIO 35] --> Input[Energy Input]
-    Current[Current Sensor<br/>GPIO 34] --> Input
-    Simulator[Simulation Input] -. optional .-> Input
-    Input --> Energy[EnergyTask]
-    Energy --> Measure[EnergyData<br/>Voltage / Current / Power / Energy / Cost]
-    Measure --> EnergyQueues[Latest-value ESP32 RTOS Queues]
-
-    EnergyQueues --> FaultTask[FaultTask]
-    EnergyQueues --> StorageTask[StorageTask]
-    EnergyQueues --> NetworkTask[NetworkTask]
-
-    FaultTask --> FaultManager[FaultManager]
-    FaultManager --> FaultState[SystemState<br/>NORMAL / WARNING / FAULT / RECOVERY]
-    FaultState --> Snapshot[Shared Snapshot]
-    Measure --> Snapshot
-
-    StorageTask --> NVS[(ESP32 Preferences / NVS)]
-
-    NetworkTask --> WiFi[Wi-Fi Manager]
-    NetworkTask --> MQTTService[MQTT Service]
-    NetworkTask --> ModbusService[Modbus TCP Server]
-    NetworkTask --> Blynk[Blynk Optional]
-    NetworkTask --> OTAManager[OTA Manager]
-
-    MQTTService --> MQTTBroker[MQTT Broker]
-    MQTTService --> OfflineBuffer[Bounded Offline Telemetry Buffer]
-    OfflineBuffer --> MQTTService
-
-    ModbusService --> ModbusClient[Industrial Modbus TCP Client]
-    Blynk --> BlynkCloud[Blynk Service]
-    OTAManager --> Firmware[Versioned Firmware Update]
-
-    DiagnosticsTask[DiagnosticsTask] --> Snapshot
-    DiagnosticsTask --> RuntimeHealth[Runtime Diagnostics]
-    RuntimeHealth --> MQTTService
-    RuntimeHealth --> Serial[Serial Health Output]
-
-    Snapshot -. mutex-protected .- NetworkTask
-    Snapshot -. mutex-protected .- DiagnosticsTask
+    A[Power ON] --> B[ESP32 boots]
+    B --> C[Open serial output]
+    C --> D[Open NVS storage]
+    D --> E[Restore energy, cost, and tariff]
+    E --> F[Initialize the sensor adapter]
+    F --> G[Initialize OTA state]
+    G --> H[Create queues and snapshot mutex]
+    H --> I[Create ESP32 RTOS tasks]
+    I --> J[EnergyTask begins measurement]
+    J --> K[Fault, storage, network, and diagnostics tasks run independently]
 ```
+
+Network services start inside `NetworkTask`. A Wi-Fi or broker failure does not prevent `EnergyTask` from running.
+
+## Main features
+
+| Feature | Purpose |
+|---|---|
+| Energy measurement | Reads voltage and current and calculates power and energy |
+| NVS persistence | Restores cumulative energy and cost after restart |
+| ESP32 RTOS tasks | Separates work into independent responsibilities |
+| Fault management | Detects invalid readings, overcurrent, and abnormal voltage |
+| MQTT | Publishes telemetry, faults, diagnostics, and OTA status |
+| Offline buffer | Holds recent telemetry during MQTT outages |
+| Modbus TCP | Provides read-only industrial register access |
+| Diagnostics | Reports uptime, heap, faults, reconnects, and task health |
+| Simulation | Provides test input without applying mains conditions |
+| OTA manager | Handles version checks, image integrity, and installation flow |
 
 ## Hardware
 
-| Signal | ESP32 Pin |
-|---|---:|
-| Voltage input | GPIO 35 |
-| Current input | GPIO 34 |
+| Signal | ESP32 pin | Calibration |
+|---|---:|---:|
+| Voltage input | GPIO 35 | `162.7` |
+| Current input | GPIO 34 | `1.80` |
 
-Sensor calibration and system settings are defined in [include/config.h](include/config.h).
+System settings are in [include/config.h](include/config.h). Local credentials use `include/secrets.h`, created from `include/secrets.example.h`.
 
 ## Interfaces
 
-### MQTT
+MQTT topics use the configured device ID:
 
 ```text
 industrial-energy/<device-id>/telemetry
@@ -87,50 +110,36 @@ industrial-energy/<device-id>/diagnostics
 industrial-energy/<device-id>/ota
 ```
 
-Telemetry is buffered locally when MQTT is unavailable and replayed after reconnect.
+The read-only Modbus TCP server listens on port `502`. See [docs/modbus-register-map.md](docs/modbus-register-map.md).
 
-### Modbus TCP
+## Documentation path
 
-The controller provides read-only Modbus TCP telemetry on port `502`.
+Read the documents in this order:
 
-See [docs/modbus-register-map.md](docs/modbus-register-map.md).
+1. [Architecture](docs/architecture.md)
+2. [Fault state machine](docs/fault-state-machine.md)
+3. [MQTT telemetry](docs/mqtt-telemetry.md)
+4. [Modbus register map](docs/modbus-register-map.md)
+5. [OTA updates](docs/ota-update.md)
 
-## Configuration
-
-Create the local credentials file:
-
-```bash
-copy include/secrets.example.h include/secrets.h
-```
-
-Set Wi-Fi, Blynk, and MQTT credentials in `include/secrets.h`. This file is ignored by Git.
-
-## Build and Upload
-
-```bash
-pio run -e esp32dev
-pio run -e esp32dev -t upload
-```
-
-Run native tests with:
-
-```bash
-pio test -e native
-```
-
-## Project Structure
+## Project structure
 
 ```text
-include/     Headers and configuration
-src/         Firmware source code
-test/        Native tests
+include/     Interfaces, data types, and configuration
+src/         Firmware implementation
+test/        Portable tests
 docs/        Architecture and interface documentation
 ```
 
-Detailed documentation:
+Important modules include `energy_logic`, `energy_meter`, `energy_store`, `fault_manager`, `network_manager`, `mqtt_service`, `telemetry_buffer`, `modbus_server`, `diagnostics`, `ota_manager`, and `version`.
 
-- [Architecture](docs/architecture.md)
-- [Fault state machine](docs/fault-state-machine.md)
-- [MQTT telemetry](docs/mqtt-telemetry.md)
-- [Modbus register map](docs/modbus-register-map.md)
-- [OTA updates](docs/ota-update.md)
+## Setup and build
+
+```bash
+copy include/secrets.example.h include/secrets.h
+pio run -e esp32dev
+pio run -e esp32dev -t upload
+pio test -e native
+```
+
+Set Wi-Fi, Blynk, and MQTT values in `include/secrets.h`. Do not place real credentials in tracked files.
