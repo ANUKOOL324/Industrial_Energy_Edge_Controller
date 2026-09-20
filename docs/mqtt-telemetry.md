@@ -1,23 +1,36 @@
 # MQTT Telemetry
 
-MQTT is a NetworkTask service. `EnergyTask` produces `EnergyData`; it does not know that MQTT exists. This keeps sensing and energy accounting running when Wi-Fi or the broker is unavailable.
+## What is MQTT?
+
+MQTT is a lightweight publish-and-subscribe messaging protocol. A device publishes a message to a topic, and a broker forwards that message to interested clients.
+
+This project uses MQTT to send energy readings and device status to a broker. MQTT is only a communication path. Energy measurement does not depend on it.
+
+## Where MQTT runs
+
+`NetworkTask` owns `MqttService`. `EnergyTask` only produces `EnergyData`; it never calls MQTT. This separation means a broker outage cannot stop sensor sampling, fault evaluation, or NVS storage.
+
+```text
+EnergyTask -> Network queue -> NetworkTask -> MqttService -> MQTT broker
+                                      |
+                                      +-> Offline telemetry buffer
+```
 
 ## Configuration
 
 | Setting | Location | Purpose |
 |---|---|---|
-| Broker address and port | `config::mqttBroker`, `config::mqttPort` | Broker endpoint |
+| Broker address | `config::mqttBroker` | MQTT server address |
+| Broker port | `config::mqttPort` | MQTT server port |
 | Device ID | `config::mqttDeviceId` | Topic namespace |
-| Publish period | `config::mqttPublishPeriodMs` | Live telemetry rate |
-| Reconnect period | `config::mqttReconnectIntervalMs` | Minimum time between attempts |
-| Buffer capacity | `config::telemetryBufferCapacity` | Maximum offline records |
-| MQTT username/password | ignored `include/secrets.h` | Optional broker credentials |
-
-PubSubClient is declared in [platformio.ini](../platformio.ini). It is not downloaded as part of the current offline validation.
+| Publish interval | `config::mqttPublishPeriodMs` | Live telemetry interval |
+| Reconnect interval | `config::mqttReconnectIntervalMs` | Minimum retry interval |
+| Buffer capacity | `config::telemetryBufferCapacity` | Maximum stored offline records |
+| Username/password | local `include/secrets.h` | Optional broker credentials |
 
 ## Topics
 
-The default device ID is `meter01`:
+With the default device ID, topics are:
 
 ```text
 industrial-energy/meter01/telemetry
@@ -27,9 +40,9 @@ industrial-energy/meter01/diagnostics
 industrial-energy/meter01/ota
 ```
 
-## Payloads
+## Telemetry messages
 
-Telemetry contains only values produced by the firmware:
+Telemetry contains values already produced by the controller:
 
 ```json
 {
@@ -43,42 +56,37 @@ Telemetry contains only values produced by the firmware:
 }
 ```
 
-Fault messages are sent when the fault code or system state changes:
+Fault messages are sent when the fault code or state changes. Diagnostics include firmware, heap, uptime, reconnect, Modbus, fault, buffer, and OTA information.
 
-```json
-{
-  "fault": "OVERCURRENT",
-  "state": "FAULT",
-  "voltage": 228.1,
-  "current": 13.1,
-  "power": 2988.0,
-  "timestamp_ms": 1234567
-}
+## Online and offline status
+
+After a successful connection, the service publishes retained `online` status. It also configures a retained Last Will message containing `offline`.
+
+The Last Will is useful because a device may lose power or network access without having time to publish a final message. The broker can then show that the device is no longer connected.
+
+## Reconnection
+
+The service records the last connection attempt and retries after `mqttReconnectIntervalMs`. It does not use a loop that waits until the broker connects.
+
+```text
+Wi-Fi unavailable -> wait -> retry Wi-Fi
+Wi-Fi available, MQTT unavailable -> wait -> retry MQTT
+MQTT connected -> publish live telemetry and replay buffered telemetry
 ```
 
-Diagnostics include firmware version, OTA state/counters, uptime, heap, Wi-Fi and MQTT reconnects, Modbus requests, fault count, offline buffer depth, and dropped telemetry.
+## Offline telemetry buffer
 
-OTA state changes use the separate `ota` topic and include the current and target versions. They are published on transitions rather than continuously.
-
-## Presence and reconnect behavior
-
-After connecting, the service publishes retained `online` on the status topic. The MQTT Last Will is retained `offline`. A broker can therefore show that a device disappeared even when the device could not publish a final message. This is useful for remote monitoring because stale telemetry and an active device are different conditions.
-
-Reconnects are timestamp-based. There is no `while (!connected())` loop. Wi-Fi or MQTT failure increments diagnostics and does not block EnergyTask, FaultTask, or StorageTask.
-
-## Offline buffer
-
-Each `TelemetryRecord` contains:
+When MQTT is unavailable, NetworkTask stores a `TelemetryRecord` in a fixed-size circular buffer. A record contains:
 
 - timestamp
 - `EnergyData`
-- `SystemState`
-- `FaultCode`
+- system state
+- fault code
 
-The buffer is a fixed-capacity circular array. When full, it drops the oldest record and increments `telemetryDroppedCount`. This keeps recent readings, which are usually more useful for current operational decisions than stale history.
+When the buffer is full, the oldest record is discarded. This keeps the newest measurements, which are more useful for current operation than stale readings.
 
-After reconnect, NetworkTask replays at most `mqttDrainPerLoop` records per iteration. A failed replay remains at the head of the buffer so it can be retried later.
+After reconnect, only a limited number of records are sent per NetworkTask cycle. This avoids flooding the broker.
 
 ## Limitations
 
-Fault and diagnostics messages are best effort. Telemetry has bounded offline retention but is not a durable database. Broker authentication and TLS policy still require target deployment configuration and validation.
+Fault and diagnostics messages are best-effort events. Telemetry has bounded offline retention; it is not a permanent database. Broker credentials and deployment security settings belong in the local configuration.

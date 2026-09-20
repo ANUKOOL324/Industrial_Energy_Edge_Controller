@@ -1,77 +1,95 @@
-# Firmware Architecture
+# Architecture
 
-## Data Flow
+## Start with the problem
+
+The controller receives measurements regularly, but storage and network services may be slower or unavailable. The design therefore separates local measurement from the services that consume the data.
+
+The most important rule is:
+
+```text
+Network failure must not stop energy measurement.
+```
+
+## What is an ESP32 RTOS task?
+
+An RTOS task is an independent function scheduled by the ESP32. Each task has its own priority, stack, and loop. This project uses tasks so measurement, storage, fault handling, networking, and diagnostics do not need to run inside one large loop.
+
+## Complete data flow
 
 ```mermaid
 flowchart LR
-    Input[Sensor or Simulator] --> Energy[EnergyTask]
-    Energy --> FaultQ[Fault Queue]
-    Energy --> StoreQ[Storage Queue]
-    Energy --> NetworkQ[Network Queue]
-    FaultQ --> Fault[FaultTask]
-    StoreQ --> Store[StorageTask]
-    NetworkQ --> Network[NetworkTask]
-    Store --> NVS[(ESP32 NVS)]
+    Sensor[Voltage and Current Sensors] --> Energy[EnergyTask]
+    Simulator[Simulation Input] -. alternative .-> Energy
+    Energy --> Data[EnergyData]
+    Data --> FaultQueue[Fault Queue]
+    Data --> StorageQueue[Storage Queue]
+    Data --> NetworkQueue[Network Queue]
+
+    FaultQueue --> Fault[FaultTask]
+    Fault --> Manager[FaultManager]
+    Manager --> Snapshot[Shared Snapshot]
+    Data --> Snapshot
+
+    StorageQueue --> Storage[StorageTask]
+    Storage --> NVS[(ESP32 NVS)]
+
+    NetworkQueue --> Network[NetworkTask]
     Network --> WiFi[Wi-Fi]
-    Network --> MQTT[MQTT]
+    Network --> MQTT[MQTT Service]
     Network --> Modbus[Modbus TCP]
     Network --> Blynk[Blynk Optional]
-    Network --> OTA[OtaManager]
-    Energy --> Snapshot[Shared Snapshot]
-    Fault --> Snapshot
+    Network --> OTA[OTA Manager]
+    MQTT --> Buffer[Offline Buffer]
+
     Diagnostics[DiagnosticsTask] --> Snapshot
-    Snapshot --> Network
+    Snapshot --> DiagnosticsData[Runtime Diagnostics]
 ```
 
-## Why the boundaries exist
+## The task responsibilities
 
-`EnergyTask` owns sensor acquisition and energy integration. It never waits for Wi-Fi, MQTT, Modbus, Blynk, or OTA.
+| Task | Responsibility | Priority | Stack setting |
+|---|---|---:|---:|
+| `EnergyTask` | Reads sensors or simulation input, filters readings, integrates energy, and sends `EnergyData` | 3 | 4096 words |
+| `FaultTask` | Consumes the newest sample and updates `FaultManager` | 2 | 3072 words |
+| `StorageTask` | Periodically saves cumulative values to NVS | 1 | 3072 words |
+| `NetworkTask` | Runs Wi-Fi, MQTT, Modbus TCP, Blynk, and OTA services | 2 | 6144 words |
+| `DiagnosticsTask` | Reads health information and prints diagnostics | 1 | 4096 words |
 
-`FaultTask` consumes the newest sample and owns the fault state machine. `StorageTask` owns NVS writes and checkpoints at a controlled interval instead of writing every sample.
+The tasks are not pinned to a CPU core. The current workload does not require core affinity.
 
-`NetworkTask` owns all network-facing services. It runs timestamped Wi-Fi and MQTT reconnect logic, the Modbus server, optional Blynk publishing, MQTT replay, and OTA coordination.
+## How data moves between tasks
 
-`DiagnosticsTask` reads the shared snapshot, adds runtime metrics, prints health information, and exposes the values used by MQTT diagnostics.
+`EnergyData` is the measurement object shared between processing stages. It contains voltage, current, power, cumulative energy, cost, and a validity flag.
 
-## Queues and snapshot
+The producer sends the newest sample to three separate one-element queues. A queue is a safe handoff between tasks. A one-element queue is appropriate here because consumers need the latest measurement, not every historical sample.
 
-There are three one-element queues:
+Separate queues are important because receiving from a normal queue removes the item. If all consumers used one queue, the first consumer could take the sample before the others saw it. `xQueueOverwrite()` replaces an older waiting sample with the newest one.
 
-| Queue | Producer | Consumer | Reason |
-|---|---|---|---|
-| Fault queue | `EnergyTask` | `FaultTask` | Fault logic receives the newest sample |
-| Storage queue | `EnergyTask` | `StorageTask` | Storage keeps the newest checkpoint candidate |
-| Network queue | `EnergyTask` | `NetworkTask` | Network publishes the newest telemetry |
+## Shared snapshot and mutex
 
-`xQueueOverwrite()` is used because each queue has capacity one. This intentionally drops an older pending sample when a consumer is behind; cumulative energy is already maintained by EnergyTask, while consumers need the latest state.
+The shared snapshot contains the latest measurement, fault event, and runtime diagnostics. A mutex protects the short copy operation when tasks read or update that snapshot. Network publishing occurs after the mutex is released so a network call does not hold the lock.
 
-The shared snapshot contains the latest `EnergyData`, the current `FaultEvent`, and `RuntimeDiagnostics`. A mutex protects copies of this small structure. Network calls are made after releasing the mutex.
+## Startup sequence
 
-## Priorities and scheduling
+1. `setup()` starts serial output.
+2. `EnergyStore` opens NVS and restores energy, cost, and tariff.
+3. `EnergyMeter` initializes the sensor adapter.
+4. `OtaManager` inspects the current OTA image state.
+5. Three queues and one snapshot mutex are created.
+6. The five ESP32 RTOS tasks are created.
+7. `EnergyTask` starts its periodic measurement cycle.
+8. `NetworkTask` starts Wi-Fi, MQTT, Modbus TCP, Blynk, and OTA processing independently.
 
-| Task | Priority | Stack setting |
-|---|---:|---:|
-| `EnergyTask` | 3 | 4096 words |
-| `FaultTask` | 2 | 3072 words |
-| `NetworkTask` | 2 | 6144 words |
-| `StorageTask` | 1 | 3072 words |
-| `DiagnosticsTask` | 1 | 4096 words |
+If a required queue, mutex, or task cannot be created, the firmware logs a fatal initialization message.
 
-Tasks are not pinned to a core. There is no current requirement for core affinity, so normal FreeRTOS scheduling keeps the design easier to inspect.
+## Storage boundary
 
-## Failure isolation
+`EnergyStore` is the only module that owns `Preferences` access. `StorageTask` writes at the configured checkpoint interval instead of writing on every sample. This preserves totals while reducing unnecessary flash writes.
 
-The intended dependency direction is:
+## Network boundary
 
-```text
-sensor failure -> fault state and diagnostics
-network failure -> reconnect counters and MQTT buffering
-MQTT failure   -> telemetry buffer
-storage failure -> storage status to be diagnosed
-```
+`NetworkTask` owns communication. Wi-Fi reconnects use timestamps rather than a long retry loop. MQTT has its own reconnect state and offline buffer. Modbus TCP is read-only. Blynk publishing is optional. OTA is isolated in `OtaManager`.
 
-None of those network or storage paths is allowed to become a prerequisite for the next energy measurement.
+## Diagnostics boundary
 
-## OTA boundary
-
-`OtaManager` is called by NetworkTask. It owns manifest parsing, semantic version checks, HTTP download, SHA-256 integrity validation, installation, and the post-update health/rollback hook. The HTTP update operation can block NetworkTask during a transfer; it does not run in EnergyTask.
+`DiagnosticsTask` reports uptime, heap, reconnect counts, fault counts, Modbus counts, MQTT buffer counters, OTA counters, and selected task stack watermarks. These values are printed locally and are also available to the MQTT diagnostics payload.

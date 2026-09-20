@@ -1,6 +1,10 @@
-# Fault State Machine
+# Fault Management
 
-The fault manager turns each `EnergyData` sample into a state and an optional `FaultCode`. It does not infer measurements that the hardware does not provide.
+## Why fault management exists
+
+Sensor readings are not always healthy. A value can be missing, too high, or outside the expected voltage range. The controller needs a predictable response instead of silently publishing every value as if it were correct.
+
+The fault manager converts each `EnergyData` sample into a state and an optional fault code. It does not add measurements that the hardware does not provide.
 
 ## States
 
@@ -11,33 +15,33 @@ stateDiagram-v2
     WARNING --> FAULT: serious condition persists
     WARNING --> RECOVERY: reading becomes healthy
     FAULT --> RECOVERY: reading becomes healthy
-    RECOVERY --> NORMAL: healthy recovery period completes
+    RECOVERY --> NORMAL: recovery period completes
 ```
 
 | State | Meaning |
 |---|---|
-| `NORMAL` | Current reading is healthy |
-| `WARNING` | An abnormal reading has appeared but fault debounce is not complete |
-| `FAULT` | A serious condition persisted through the debounce period |
+| `NORMAL` | Readings are healthy |
+| `WARNING` | An abnormal reading has appeared, but the serious-condition timer has not completed |
+| `FAULT` | A serious condition stayed active through the debounce period |
 | `RECOVERY` | Readings are healthy again, but stability is still being confirmed |
 
-There is deliberately no direct `FAULT -> NORMAL` transition. The recovery period prevents a single good sample from clearing a persistent fault.
+There is no direct `FAULT -> NORMAL` transition. This avoids clearing a fault because of one good sample.
 
-## Fault codes currently used
+## Current fault conditions
 
-| Code | Trigger in the current code |
+| Fault code | Current trigger |
 |---|---|
-| `INVALID_SENSOR_READING` | Sample is not valid after measurement filtering |
+| `INVALID_SENSOR_READING` | The measurement is not valid after filtering |
 | `OVERCURRENT` | Current reaches the configured warning or fault threshold |
 | `ABNORMAL_VOLTAGE` | Voltage is outside the configured demonstration range |
 
-The enum also reserves codes for sensor timeout, network disconnection, and low memory, but the current measurement path does not actively generate those conditions.
+The enum also contains reserved values for sensor timeout, network disconnection, and low memory. The current measurement path does not actively generate those values.
 
-## Timing and thresholds
+## Timing and configuration
 
-Values are in [include/config.h](../include/config.h):
+The thresholds are centralized in [include/config.h](../include/config.h):
 
-| Setting | Current value | Purpose |
+| Setting | Value | Meaning |
 |---|---:|---|
 | `overcurrentWarningA` | 8.0 A | Starts an overcurrent warning |
 | `overcurrentFaultA` | 12.0 A | Serious overcurrent threshold |
@@ -46,8 +50,21 @@ Values are in [include/config.h](../include/config.h):
 | `faultDebounceMs` | 2000 ms | Time before a serious condition becomes `FAULT` |
 | `faultRecoveryTimeMs` | 10000 ms | Healthy time before returning to `NORMAL` |
 
-These are demonstration thresholds. They are not certification or protection settings and must be validated for the installed sensor and electrical system.
+These are demonstration values. They are not electrical protection settings or certification values.
 
-## Events
+## Task flow
 
-`FaultEvent` carries the state, fault code, timestamp, voltage, current, and real power. NetworkTask publishes an MQTT fault message only when the state or fault code changes, avoiding one duplicate message per measurement cycle.
+```text
+EnergyTask
+    |
+    v
+Fault queue
+    |
+    v
+FaultTask
+    |
+    v
+FaultManager -> Shared Snapshot -> Diagnostics / NetworkTask
+```
+
+When the state or fault code changes, NetworkTask can publish one MQTT fault event. The same event is not sent continuously on every measurement cycle.
